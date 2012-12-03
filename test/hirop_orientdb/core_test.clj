@@ -2,7 +2,8 @@
   (:use clojure.test
         hirop.backend
         hirop-orientdb.core)
-  (:require [clj-orient.core :as ocore]))
+  (:require [hirop.core :as hirop]
+            [clj-orient.core :as ocore]))
 
 (defn init-fresh [connection-data]
   (let [admin-connection-data
@@ -15,7 +16,7 @@
         (ocore/delete-db!))
       (catch Exception e (prn e)))
     (alter-var-root #'*connection-data* (fn [_] connection-data))
-    (com.orientechnologies.orient.core.config.OGlobalConfiguration/dumpConfiguration(System/out))
+    ;;(com.orientechnologies.orient.core.config.OGlobalConfiguration/dumpConfiguration(System/out))
     (try
       (ocore/create-db! (:connection-string *connection-data*))
       (catch Exception e (prn e)))))
@@ -26,15 +27,19 @@
          :username "writer"
          :password "writer"}
         sdocs
-        [{:_id "tmp0" :_type "Foo" :title "First"}
-         {:_id "tmp1" :_type "Bar" :Foo_ "tmp0" :title "Second"}
-         {:_id "tmp2" :_type "Bar" :Foo_ "tmp0" :title "Third"}
-         {:_id "tmp3" :_type "Baz" :Bar_ ["tmp1" "tmp2"] :title "Fourth"}]]
+        [{:_hirop {:id "tmp0" :type "Foo"}
+          :title "First"}
+         {:_hirop {:id "tmp1" :type "Bar" :rels {:Foo "tmp0"}}
+          :title "Second"}
+         {:_hirop {:id "tmp2" :type "Bar" :rels {:Foo "tmp0"}}
+          :title "Third"}
+         {:_hirop {:id "tmp3" :type "Baz" :rels {:Bar ["tmp1" "tmp2"]}}
+          :title "Fourth"}]]
     (init-fresh connection-data)
     (let [res (save :orientdb sdocs :test)
           remap (:remap res)
           docs (fetch :orientdb :test {:Foo (remap "tmp0")} nil)]
-      (is (= (set (:Bar_ (first (filter #(= (:_type %) "Baz") docs))))
+      (is (= (set (hirop/hrel (first (filter #(= (hirop/htype %) :Baz) docs)) :Bar))
              (set [(remap "tmp1") (remap "tmp2")]))))))
 
 (deftest save-fetch-boundary-test
@@ -43,16 +48,21 @@
          :username "writer"
          :password "writer"}
         sdocs
-        [{:_id "tmp0" :_type "Foo" :title "First1"}
-         {:_id "tmp1" :_type "Bar" :Foo_ "tmp0" :Baz_ "tmp4" :title "Second1" :_meta {:tag "META"}}
-         {:_id "tmp2" :_type "Foo" :title "First2"}
-         {:_id "tmp3" :_type "Bar" :Foo_ "tmp2" :Baz_ "tmp4" :title "Second2"}
-         {:_id "tmp4" :_type "Baz" :title "Third"}]]
+        [{:_hirop {:id "tmp0" :type "Foo"}
+          :title "First1"}
+         {:_hirop {:id "tmp1" :type "Bar" :rels {:Foo "tmp0" :Baz "tmp4"} :meta {:tag "META"}}
+          :title "Second1"}
+         {:_hirop {:id "tmp2" :type "Foo"}
+          :title "First2"}
+         {:_hirop {:id "tmp3" :type "Bar" :rels {:Foo "tmp2" :Baz "tmp4"}}
+          :title "Second2"}
+         {:_hirop {:id "tmp4" :type "Baz"}
+          :title "Third"}]]
     (init-fresh connection-data)
     (let [res (save :orientdb sdocs :test)
           remap (:remap res)
           docs (fetch :orientdb :test {:Foo (remap "tmp0")} nil)]
-      (is (= (:_meta (first (filter :_meta docs)))
+      (is (= (hirop/hmeta (first (filter hirop/hmeta docs)))
              {:tag "META"}))
       (is (= (set (map :title docs))
              #{"First1" "Second1" "Third" "Second2" "First2"})))

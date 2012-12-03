@@ -1,6 +1,7 @@
 (ns hirop-orientdb.core
   (:use hirop.backend)
-  (:require [clojure.string :as string]
+  (:require [hirop.core :as hirop]
+            [clojure.string :as string]
             [clj-orient.core :as ocore]
             [clj-orient.graph :as ograph]
             [clj-orient.query :as oquery]))
@@ -29,13 +30,13 @@
   (com.orientechnologies.orient.core.id.ORecordId. hid))
 
 (defn orient-id [sdoc]
-  (->rid (:_id sdoc)))
+  (->rid (hirop/hid sdoc)))
 
 (defn orient-rev [sdoc]
-  (read-string (:_rev sdoc)))
+  (read-string (hirop/hrev sdoc)))
 
 (defn rel-keys [sdoc]
-  (for [[k _] sdoc :when (re-find #"(.*)_$" (name k))] k))
+  (keys (hirop/hrels sdoc)))
 
 (defn flatten-rels
   ([odoc]
@@ -48,8 +49,8 @@
                 out-id (hirop-id out-vert)
                 cardinality (:cardinality edge)
                 key (if (nil? context-name)
-                      (keyword (str (:context edge) "_" (:field edge)))
-                      (keyword (:field edge)))]
+                      (keyword (str (:context edge) "_" (:_hirop_type out-vert)))
+                      (keyword (:_hirop_type out-vert)))]
             (condp = cardinality
               :one (assoc res key out-id)
               :many (update-in res [key] #(conj (or % []) out-id))))
@@ -63,42 +64,38 @@
   ([odoc context-name]
      (let [odoc-map (ocore/doc->map odoc)
            sdoc (dissoc odoc-map :#rid :#version :in :out)
+           sdoc (dissoc sdoc :_hirop_conf :_hirop_meta :_hirop_type)
            rid (str (:#rid odoc))
            version (str (:#version odoc))
            rels (if (= (odoc :#class) :OGraphVertex) (flatten-rels odoc context-name) {})]
-       (merge
-        sdoc
-        {:_id rid :_rev version}
-        rels))))
+       (->
+        sdoc 
+        (hirop/assoc-hid rid) 
+        (hirop/assoc-hrev version) 
+        (hirop/assoc-hrels rels)
+        (hirop/assoc-hconf (:_hirop_conf odoc))
+        (hirop/assoc-hmeta (:_hirop_meta odoc))
+        (hirop/assoc-htype (:_hirop_type odoc))))))
 
 (defn hist->hirop
   [odoc]
   (let [odoc-map (ocore/doc->map odoc)
-        sdoc (dissoc odoc-map :#rid :#version :in :out)
-        rid (str (:#rid odoc))
-        version (str (:#version odoc))]
-    (merge
-     sdoc
-     {:_hid rid :_hrev version})))
+        sdoc (dissoc odoc-map :#rid :#version :in :out)]
+    sdoc))
 
 (defn orient->hist
   [odoc]
-  (orient->hirop odoc))
-
-(defn is-temporary-id?
-  [id]
-  (string? (re-find #"^tmp" id)))
-
-(defn has-temporary-id?
-  [sdoc]
-  (is-temporary-id? (:_id sdoc)))
+  (let [sdoc (orient->hirop odoc)]
+    (assoc sdoc :_hirop_id (hirop/hid sdoc))))
 
 (defn hirop->orient-map
   [sdoc]
   (->
    sdoc
-   (#(apply (partial dissoc %) (rel-keys sdoc)))
-   (#(dissoc % :_id :_rev))))
+   (dissoc :_hirop)
+   (assoc :_hirop_conf (hirop/hconf sdoc))
+   (assoc :_hirop_meta (hirop/hmeta sdoc))
+   (assoc :_hirop_type (name (hirop/htype sdoc)))))
 
 (defmacro with-db [& forms]
   `(ocore/with-db
@@ -116,7 +113,7 @@
         q
         (if (empty? boundaries)
           (str "SELECT FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE (@class = 'OGraphVertex' OR context = '" context-name "')) WHERE @class = 'OGraphVertex'")
-          (str "SELECT FROM (TRAVERSE V.out, E.in FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE ((@class = 'OGraphVertex' AND NOT (_type IN [" (string/join ", " boundaries) "])) OR context = '" context-name "')) WHERE ($depth < 3 AND (@class = 'OGraphVertex' OR context = '" context-name "'))) WHERE @class = 'OGraphVertex'"))]
+          (str "SELECT FROM (TRAVERSE V.out, E.in FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE ((@class = 'OGraphVertex' AND NOT (_hirop_type IN [" (string/join ", " boundaries) "])) OR context = '" context-name "')) WHERE ($depth < 3 AND (@class = 'OGraphVertex' OR context = '" context-name "'))) WHERE @class = 'OGraphVertex'"))]
     (with-db
       (doall
        (map #(orient->hirop % context-name)
@@ -137,7 +134,7 @@
   [sdoc]
   (with-db
     (let [odoc
-          (if (has-temporary-id? sdoc)
+          (if (hirop/has-temporary-id? sdoc)
             (ograph/vertex)
             (ocore/load (orient-id sdoc)))
           odoc (merge odoc (hirop->orient-map sdoc))]
@@ -167,7 +164,7 @@
   (with-db
     (doall
      (map hist->hirop
-          (oquery/sql-query (str "SELECT FROM History WHERE _id = " id))))))
+          (oquery/sql-query (str "SELECT FROM History WHERE _hirop_id = " id))))))
 
 (defn class-name
   [odoc]
@@ -200,7 +197,8 @@
       (.close exporter)
       (.close db))
     (catch Exception e
-      (prn "Backup exception:" e))))
+      (prn "BACKUP EXCEPTION:" e)
+      (throw e))))
 
 (defmethod save :orientdb
   ([backend sdocs]
@@ -216,44 +214,44 @@
                                       (map
                                        (fn [sdoc]
                                          (let [odoc
-                                               (if (has-temporary-id? sdoc)
+                                               (if (hirop/has-temporary-id? sdoc)
                                                  (ograph/vertex)
                                                  (ocore/load (orient-id sdoc)))]
-                                           [(:_id sdoc) odoc]))
+                                           [(hirop/hid sdoc) odoc]))
                                        sdocs))]
                    ;; any conflicts?
                    (if (empty?
                         (filter
                          (fn [sdoc]
                            (and
-                            (get-in odoc-map [(:_id sdoc) :#version])
-                            (> (get-in odoc-map [(:_id sdoc) :#version]) (orient-rev sdoc)))) 
+                            (get-in odoc-map [(hirop/hid sdoc) :#version])
+                            (> (get-in odoc-map [(hirop/hid sdoc) :#version]) (orient-rev sdoc)))) 
                          sdocs))
                      (do
                        ;; ok, no conflict so far, so go ahead, copy old data to history, merge new data, clean old links for the context and create new links for the context
                        ;; TODO: make history optional
-                       (doseq [[id odoc] (filter #(not (is-temporary-id? (first %))) odoc-map)]
+                       (doseq [[id odoc] (filter #(not (hirop/is-temporary-id? (first %))) odoc-map)]
                          (let [hist-odoc (ocore/document :History)
                                hist-odoc (merge hist-odoc (orient->hist odoc))]
                            (ocore/save! hist-odoc)))
                        (let [odoc-map (into {}
                                             (map
                                              (fn [sdoc]
-                                               (let [odoc (get odoc-map (:_id sdoc))
+                                               (let [odoc (get odoc-map (hirop/hid sdoc))
                                                      odoc (merge odoc (hirop->orient-map sdoc))
                                                      out-edges (if context-name
                                                                  (filter #(= (:context %) (name context-name)) (ograph/get-edges odoc :out))
                                                                  [])]
                                                  (doseq [out-edge out-edges]
                                                    (ograph/delete-edge! out-edge))
-                                                 [(:_id sdoc) (merge odoc (hirop->orient-map sdoc))]))
+                                                 [(hirop/hid sdoc) (merge odoc (hirop->orient-map sdoc))]))
                                              sdocs))]
                          ;; create links
                          (doseq [sdoc sdocs]
                            (doseq [rel-key (rel-keys sdoc)]
-                             (let [from-odoc (get odoc-map (:_id sdoc))
-                                   to-hids (get sdoc rel-key)
-                                   rel-data {:field (name rel-key) :context (name context-name) :cardinality (if (coll? to-hids) :many :one)}
+                             (let [from-odoc (get odoc-map (hirop/hid sdoc))
+                                   to-hids (hirop/hrel sdoc rel-key)
+                                   rel-data {:context (name context-name) :cardinality (if (coll? to-hids) :many :one)}
                                    to-hids (if (coll? to-hids) to-hids [to-hids])]
                                (doseq [to-hid to-hids]
                                  (let[to-odoc (get odoc-map to-hid)
@@ -269,7 +267,7 @@
                      (doall
                       (map
                        (fn [el] [(first el) (hirop-id (second el))])
-                       (filter #(is-temporary-id? (first %)) odoc-map))))]
+                       (filter #(hirop/is-temporary-id? (first %)) odoc-map))))]
            {:result :success :remap tmp-map})
          (catch Exception e
            {:result :conflict})))))
