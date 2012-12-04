@@ -47,7 +47,7 @@
         (if (or (nil? context-name) (= (:context edge) (name context-name)))
           (let [out-vert (ograph/get-vertex edge :in)
                 out-id (hirop-id out-vert)
-                cardinality (:cardinality edge)
+                cardinality (keyword (:cardinality edge))
                 key (if (nil? context-name)
                       (keyword (str (:context edge) "_" (:_hirop_type out-vert)))
                       (keyword (:_hirop_type out-vert)))]
@@ -108,7 +108,7 @@
 (defmethod fetch :orientdb
   [backend context-name external-ids boundaries]
   (let [targets (vals external-ids)
-        boundaries (map #(str "'" (name %) "'") (filter #(not (contains? external-ids %)) boundaries))
+        boundaries (distinct (map #(str "'" (name %) "'") (filter #(not (contains? external-ids %)) boundaries)))
         context-name (name context-name)
         q
         (if (empty? boundaries)
@@ -251,7 +251,7 @@
                            (doseq [rel-key (rel-keys sdoc)]
                              (let [from-odoc (get odoc-map (hirop/hid sdoc))
                                    to-hids (hirop/hrel sdoc rel-key)
-                                   rel-data {:context (name context-name) :cardinality (if (coll? to-hids) :many :one)}
+                                   rel-data {:context (name context-name) :cardinality (if (coll? to-hids) "many" "one")}
                                    to-hids (if (coll? to-hids) to-hids [to-hids])]
                                (doseq [to-hid to-hids]
                                  (let[to-odoc (get odoc-map to-hid)
