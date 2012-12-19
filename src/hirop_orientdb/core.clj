@@ -247,6 +247,7 @@
                     (filter #(hirop/is-temporary-id? (first %)) odoc-map))))]
         {:result :success :remap tmp-map})
       (catch Exception e
+        (prn e)
         {:result :conflict}))))
 ;; TODO: do a better job in identifying the kind of exception and only return :conflict in that case
 
@@ -271,7 +272,7 @@
 
 (defmethod save :orientdb
   [backend store context]
-  (let [sdocs (:starred store)
+  (let [sdocs (vals (:starred store))
         context-name (:name context)]
     (save* sdocs context-name)))
 
