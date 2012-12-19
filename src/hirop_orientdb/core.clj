@@ -267,7 +267,7 @@
 
 (defmethod fetch :orientdb
   [backend context]
-  (fetch* backend (:name context) (:external-ids context) (hirop/get-free-external-doctypes context)))
+  (fetch* (:name context) (:external-ids context) (hirop/get-free-external-doctypes context)))
 
 (defmethod save :orientdb
   [backend store context]
