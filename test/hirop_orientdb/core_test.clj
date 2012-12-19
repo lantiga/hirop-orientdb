@@ -36,9 +36,9 @@
          {:_hirop {:id "tmp3" :type "Baz" :rels {:Bar ["tmp1" "tmp2"]}}
           :title "Fourth"}]]
     (init-fresh connection-data)
-    (let [res (save :orientdb sdocs :test)
+    (let [res (save* sdocs :test)
           remap (:remap res)
-          docs (fetch :orientdb :test {:Foo (remap "tmp0")} nil)]
+          docs (fetch* :test {:Foo (remap "tmp0")} nil)]
       (is (= (set (hirop/hrel (first (filter #(= (hirop/htype %) :Baz) docs)) :Bar))
              (set [(remap "tmp1") (remap "tmp2")]))))))
 
@@ -59,15 +59,15 @@
          {:_hirop {:id "tmp4" :type "Baz"}
           :title "Third"}]]
     (init-fresh connection-data)
-    (let [res (save :orientdb sdocs :test)
+    (let [res (save* sdocs :test)
           remap (:remap res)
-          docs (fetch :orientdb :test {:Foo (remap "tmp0")} nil)]
+          docs (fetch* :test {:Foo (remap "tmp0")} nil)]
       (is (= (hirop/hmeta (first (filter hirop/hmeta docs)))
              {:tag "META"}))
       (is (= (set (map :title docs))
              #{"First1" "Second1" "Third" "Second2" "First2"})))
-    (let [res (save :orientdb sdocs :test)
+    (let [res (save* sdocs :test)
           remap (:remap res)
-          docs (fetch :orientdb :test {:Foo (remap "tmp0")} [:Foo :Baz])]
+          docs (fetch* :test {:Foo (remap "tmp0")} [:Foo :Baz])]
       (is (= (set (map :title docs))
              #{"First1" "Second1" "Third"})))))

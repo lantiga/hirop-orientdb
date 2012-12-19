@@ -105,20 +105,6 @@
       (:password *connection-data*))
      (do ~@forms)))
 
-(defmethod fetch :orientdb
-  [backend context-name external-ids boundaries]
-  (let [targets (vals external-ids)
-        boundaries (distinct (map #(str "'" (name %) "'") (filter #(not (contains? external-ids %)) boundaries)))
-        context-name (name context-name)
-        q
-        (if (empty? boundaries)
-          (str "SELECT FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE (@class = 'OGraphVertex' OR context = '" context-name "')) WHERE @class = 'OGraphVertex'")
-          (str "SELECT FROM (TRAVERSE V.out, E.in FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE ((@class = 'OGraphVertex' AND NOT (_hirop_type IN [" (string/join ", " boundaries) "])) OR context = '" context-name "')) WHERE ($depth < 3 AND (@class = 'OGraphVertex' OR context = '" context-name "'))) WHERE @class = 'OGraphVertex'"))]
-    (with-db
-      (doall
-       (map #(orient->hirop % context-name)
-            (oquery/sql-query q))))))
-
 (defn query
   [type query & {class-name :class-name context-name :context-name bindings :bindings}]
   (let [class-name (or class-name :OGraphVertex)]
@@ -126,9 +112,9 @@
       (doall
        (map #(orient->hirop % context-name)
             (condp = type
-                :clj (oquery/clj-query query bindings)
-                :sql (oquery/sql-query query bindings)
-                :native (oquery/native-query class-name query)))))))
+              :clj (oquery/clj-query query bindings)
+              :sql (oquery/sql-query query bindings)
+              :native (oquery/native-query class-name query)))))))
 
 (defn save-document
   [sdoc]
@@ -159,13 +145,6 @@
     (let [rb (.load ocore/*db* (->rid hid))]
       (ocore/->bytes rb))))
 
-(defmethod history :orientdb
-  [backend id]
-  (with-db
-    (doall
-     (map hist->hirop
-          (oquery/sql-query (str "SELECT FROM History WHERE _hirop_id = " id))))))
-
 (defn class-name
   [odoc]
   (ocore/oclass-name->kw (.field odoc "@class")))
@@ -191,7 +170,7 @@
               (com.orientechnologies.orient.core.db.graph.OGraphDatabase. (:connection-string *connection-data*))
               (.open (:username *connection-data*) (:password *connection-data*)))
           listener (reify com.orientechnologies.orient.core.command.OCommandOutputListener
-                          (onMessage [this text] nil))
+                     (onMessage [this text] nil))
           exporter (com.orientechnologies.orient.core.db.tool.ODatabaseExport. db location listener)]
       (.exportDatabase exporter)
       (.close exporter)
@@ -200,76 +179,106 @@
       (prn "BACKUP EXCEPTION:" e)
       (throw e))))
 
-(defmethod save :orientdb
-  ([backend sdocs]
-     (save backend sdocs nil))
-  ([backend sdocs context-name]
-     (with-db
-       (if-not (ocore/exists-class? :History)
-         (ocore/create-class! :History))
-       (try
-         (let [odoc-map
-               (ocore/with-tx
-                 (let [odoc-map (into {}
-                                      (map
-                                       (fn [sdoc]
-                                         (let [odoc
-                                               (if (hirop/has-temporary-id? sdoc)
-                                                 (ograph/vertex)
-                                                 (ocore/load (orient-id sdoc)))]
-                                           [(hirop/hid sdoc) odoc]))
-                                       sdocs))]
-                   ;; any conflicts?
-                   (if (empty?
-                        (filter
-                         (fn [sdoc]
-                           (and
-                            (get-in odoc-map [(hirop/hid sdoc) :#version])
-                            (> (get-in odoc-map [(hirop/hid sdoc) :#version]) (orient-rev sdoc)))) 
-                         sdocs))
-                     (do
-                       ;; ok, no conflict so far, so go ahead, copy old data to history, merge new data, clean old links for the context and create new links for the context
-                       ;; TODO: make history optional
-                       (doseq [[id odoc] (filter #(not (hirop/is-temporary-id? (first %))) odoc-map)]
-                         (let [hist-odoc (ocore/document :History)
-                               hist-odoc (merge hist-odoc (orient->hist odoc))]
-                           (ocore/save! hist-odoc)))
-                       (let [odoc-map (into {}
-                                            (map
-                                             (fn [sdoc]
-                                               (let [odoc (get odoc-map (hirop/hid sdoc))
-                                                     odoc (merge odoc (hirop->orient-map sdoc))
-                                                     out-edges (if context-name
-                                                                 (filter #(= (:context %) (name context-name)) (ograph/get-edges odoc :out))
-                                                                 [])]
-                                                 (doseq [out-edge out-edges]
-                                                   (ograph/delete-edge! out-edge))
-                                                 [(hirop/hid sdoc) (merge odoc (hirop->orient-map sdoc))]))
-                                             sdocs))]
-                         ;; create links
-                         (doseq [sdoc sdocs]
-                           (doseq [rel-key (rel-keys sdoc)]
-                             (let [from-odoc (get odoc-map (hirop/hid sdoc))
-                                   to-hids (hirop/hrel sdoc rel-key)
-                                   rel-data {:context (name context-name) :cardinality (if (coll? to-hids) "many" "one")}
-                                   to-hids (if (coll? to-hids) to-hids [to-hids])]
-                               (doseq [to-hid to-hids]
-                                 (let[to-odoc (get odoc-map to-hid)
-                                      ;; in case it is an external id, we have to load it
-                                      to-odoc (or to-odoc (ocore/load (->rid to-hid)))]
-                                   (ograph/link! from-odoc rel-data to-odoc))))))
-                         ;; save all
-                         (doseq [[_ odoc] odoc-map] (ocore/save! odoc))
-                         odoc-map))
-                     (throw (Exception. "Conflict detected")))))
-               tmp-map
-               (into {}
-                     (doall
-                      (map
-                       (fn [el] [(first el) (hirop-id (second el))])
-                       (filter #(hirop/is-temporary-id? (first %)) odoc-map))))]
-           {:result :success :remap tmp-map})
-         (catch Exception e
-           {:result :conflict})))))
+(defn save*
+  [sdocs context-name]
+  (with-db
+    (if-not (ocore/exists-class? :History)
+      (ocore/create-class! :History))
+    (try
+      (let [odoc-map
+            (ocore/with-tx
+              (let [odoc-map (into {}
+                                   (map
+                                    (fn [sdoc]
+                                      (let [odoc
+                                            (if (hirop/has-temporary-id? sdoc)
+                                              (ograph/vertex)
+                                              (ocore/load (orient-id sdoc)))]
+                                        [(hirop/hid sdoc) odoc]))
+                                    sdocs))]
+                ;; any conflicts?
+                (if (empty?
+                     (filter
+                      (fn [sdoc]
+                        (and
+                         (get-in odoc-map [(hirop/hid sdoc) :#version])
+                         (> (get-in odoc-map [(hirop/hid sdoc) :#version]) (orient-rev sdoc)))) 
+                      sdocs))
+                  (do
+                    ;; ok, no conflict so far, so go ahead, copy old data to history, merge new data, clean old links for the context and create new links for the context
+                    ;; TODO: make history optional
+                    (doseq [[id odoc] (filter #(not (hirop/is-temporary-id? (first %))) odoc-map)]
+                      (let [hist-odoc (ocore/document :History)
+                            hist-odoc (merge hist-odoc (orient->hist odoc))]
+                        (ocore/save! hist-odoc)))
+                    (let [odoc-map (into {}
+                                         (map
+                                          (fn [sdoc]
+                                            (let [odoc (get odoc-map (hirop/hid sdoc))
+                                                  odoc (merge odoc (hirop->orient-map sdoc))
+                                                  out-edges (if context-name
+                                                              (filter #(= (:context %) (name context-name)) (ograph/get-edges odoc :out))
+                                                              [])]
+                                              (doseq [out-edge out-edges]
+                                                (ograph/delete-edge! out-edge))
+                                              [(hirop/hid sdoc) (merge odoc (hirop->orient-map sdoc))]))
+                                          sdocs))]
+                      ;; create links
+                      (doseq [sdoc sdocs]
+                        (doseq [rel-key (rel-keys sdoc)]
+                          (let [from-odoc (get odoc-map (hirop/hid sdoc))
+                                to-hids (hirop/hrel sdoc rel-key)
+                                rel-data {:context (name context-name) :cardinality (if (coll? to-hids) "many" "one")}
+                                to-hids (if (coll? to-hids) to-hids [to-hids])]
+                            (doseq [to-hid to-hids]
+                              (let[to-odoc (get odoc-map to-hid)
+                                   ;; in case it is an external id, we have to load it
+                                   to-odoc (or to-odoc (ocore/load (->rid to-hid)))]
+                                (ograph/link! from-odoc rel-data to-odoc))))))
+                      ;; save all
+                      (doseq [[_ odoc] odoc-map] (ocore/save! odoc))
+                      odoc-map))
+                  (throw (Exception. "Conflict detected")))))
+            tmp-map
+            (into {}
+                  (doall
+                   (map
+                    (fn [el] [(first el) (hirop-id (second el))])
+                    (filter #(hirop/is-temporary-id? (first %)) odoc-map))))]
+        {:result :success :remap tmp-map})
+      (catch Exception e
+        {:result :conflict}))))
 ;; TODO: do a better job in identifying the kind of exception and only return :conflict in that case
-  
+
+(defn fetch*
+  [context-name external-ids boundaries]
+  (let [targets (vals external-ids)
+        boundaries (distinct (map #(str "'" (name %) "'") (filter #(not (contains? external-ids %)) boundaries)))
+        context-name (name context-name)
+        q
+        (if (empty? boundaries)
+          (str "SELECT FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE (@class = 'OGraphVertex' OR context = '" context-name "')) WHERE @class = 'OGraphVertex'")
+          (str "SELECT FROM (TRAVERSE V.out, E.in FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE ((@class = 'OGraphVertex' AND NOT (_hirop_type IN [" (string/join ", " boundaries) "])) OR context = '" context-name "')) WHERE ($depth < 3 AND (@class = 'OGraphVertex' OR context = '" context-name "'))) WHERE @class = 'OGraphVertex'"))]
+    (with-db
+      (doall
+       (map #(orient->hirop % context-name)
+            (oquery/sql-query q))))))
+
+
+(defmethod fetch :orientdb
+  [backend context]
+  (fetch* backend (:name context) (:external-ids context) (hirop/get-free-external-doctypes context)))
+
+(defmethod save :orientdb
+  [backend store context]
+  (let [sdocs (:starred store)
+        context-name (:name context)]
+    (save* sdocs context-name)))
+
+(defmethod history :orientdb
+  [backend id]
+  (with-db
+    (doall
+     (map hist->hirop
+          (oquery/sql-query (str "SELECT FROM History WHERE _hirop_id = " id))))))
+
