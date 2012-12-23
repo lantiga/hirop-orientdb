@@ -271,8 +271,8 @@
   (fetch* (:name context) (:external-ids context) (hirop/get-free-external-doctypes context)))
 
 (defmethod save :orientdb
-  [backend store context]
-  (let [sdocs (vals (:starred store))
+  [backend context]
+  (let [sdocs (vals (:starred context))
         context-name (:name context)]
     (save* sdocs context-name)))
 
