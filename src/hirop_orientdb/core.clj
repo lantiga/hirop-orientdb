@@ -6,19 +6,21 @@
             [clj-orient.graph :as ograph]
             [clj-orient.query :as oquery]))
 
-;;TODO: here we should modify the var in a thread-local way.
-;; The alternative is to pass connection-data around, which is not bad, after all.
-(def ^:dynamic *connection-data* nil)
+(defmacro with-db [& forms]
+  `(ocore/with-db
+     (ograph/open-graph-db!
+      (:connection-string *connection-data*)
+      (:username *connection-data*)
+      (:password *connection-data*))
+     (do ~@forms)))
 
-(defn create-db-if-needed! []
-  (when-not (ocore/db-exists? (:connection-string *connection-data*))
-    (ocore/create-db! (:connection-string *connection-data*))))
-
-(defn init [connection-data]
-  (alter-var-root #'*connection-data* (fn [_] connection-data))
+(defn init-database
+  [connection-data]
   (try
-    (create-db-if-needed!)
-    (catch Exception e (prn e))))
+    (binding [*connection-data* connection-data]
+      (when-not (ocore/db-exists? (:connection-string *connection-data*))
+        (ocore/create-db! (:connection-string *connection-data*)))
+      (catch Exception e (prn e)))))
 
 (defn hirop-id [odoc]
   (str (:#rid odoc)))
@@ -97,13 +99,6 @@
    (assoc :_hirop_meta (hirop/hmeta sdoc))
    (assoc :_hirop_type (name (hirop/htype sdoc)))))
 
-(defmacro with-db [& forms]
-  `(ocore/with-db
-     (ograph/open-graph-db!
-      (:connection-string *connection-data*)
-      (:username *connection-data*)
-      (:password *connection-data*))
-     (do ~@forms)))
 
 (defn query
   [type query & {class-name :class-name context-name :context-name bindings :bindings}]
