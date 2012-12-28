@@ -10,15 +10,15 @@
         {:connection-string "local:testdb"
          :username "admin"
          :password "admin"}]
-    (alter-var-root #'*connection-data* (fn [_] admin-connection-data))
+    ;;(alter-var-root #'*connection-data* (fn [_] admin-connection-data))
     (try
-      (with-db
+      (with-db admin-connection-data
         (ocore/delete-db!))
       (catch Exception e (prn e)))
-    (alter-var-root #'*connection-data* (fn [_] connection-data))
+    ;; (alter-var-root #'*connection-data* (fn [_] connection-data))
     ;;(com.orientechnologies.orient.core.config.OGlobalConfiguration/dumpConfiguration(System/out))
     (try
-      (ocore/create-db! (:connection-string *connection-data*))
+      (ocore/create-db! (:connection-string connection-data))
       (catch Exception e (prn e)))))
 
 (deftest save-fetch-test
@@ -36,9 +36,9 @@
          {:_hirop {:id "tmp3" :type "Baz" :rels {:Bar ["tmp1" "tmp2"]}}
           :title "Fourth"}]]
     (init-fresh connection-data)
-    (let [res (save* sdocs :test)
+    (let [res (save* connection-data sdocs :test)
           remap (:remap res)
-          docs (fetch* :test {:Foo (remap "tmp0")} nil)]
+          docs (fetch* connection-data :test {:Foo (remap "tmp0")} nil)]
       (is (= (set (hirop/hrel (first (filter #(= (hirop/htype %) :Baz) docs)) :Bar))
              (set [(remap "tmp1") (remap "tmp2")]))))))
 
@@ -59,15 +59,15 @@
          {:_hirop {:id "tmp4" :type "Baz"}
           :title "Third"}]]
     (init-fresh connection-data)
-    (let [res (save* sdocs :test)
+    (let [res (save* connection-data sdocs :test)
           remap (:remap res)
-          docs (fetch* :test {:Foo (remap "tmp0")} nil)]
+          docs (fetch* connection-data :test {:Foo (remap "tmp0")} nil)]
       (is (= (hirop/hmeta (first (filter hirop/hmeta docs)))
              {:tag "META"}))
       (is (= (set (map :title docs))
              #{"First1" "Second1" "Third" "Second2" "First2"})))
-    (let [res (save* sdocs :test)
+    (let [res (save* connection-data sdocs :test)
           remap (:remap res)
-          docs (fetch* :test {:Foo (remap "tmp0")} [:Foo :Baz])]
+          docs (fetch* connection-data :test {:Foo (remap "tmp0")} [:Foo :Baz])]
       (is (= (set (map :title docs))
              #{"First1" "Second1" "Third"})))))

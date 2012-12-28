@@ -6,21 +6,20 @@
             [clj-orient.graph :as ograph]
             [clj-orient.query :as oquery]))
 
-(defmacro with-db [& forms]
+(defmacro with-db [backend & forms]
   `(ocore/with-db
      (ograph/open-graph-db!
-      (:connection-string *connection-data*)
-      (:username *connection-data*)
-      (:password *connection-data*))
+      (:connection-string ~backend)
+      (:username ~backend)
+      (:password ~backend))
      (do ~@forms)))
 
 (defn init-database
   [connection-data]
   (try
-    (binding [*connection-data* connection-data]
-      (when-not (ocore/db-exists? (:connection-string *connection-data*))
-        (ocore/create-db! (:connection-string *connection-data*)))
-      (catch Exception e (prn e)))))
+    (when-not (ocore/db-exists? (:connection-string connection-data))
+      (ocore/create-db! (:connection-string connection-data)))
+    (catch Exception e (prn e))))
 
 (defn hirop-id [odoc]
   (str (:#rid odoc)))
@@ -101,9 +100,9 @@
 
 
 (defn query
-  [type query & {class-name :class-name context-name :context-name bindings :bindings}]
+  [backend type query & {class-name :class-name context-name :context-name bindings :bindings}]
   (let [class-name (or class-name :OGraphVertex)]
-    (with-db
+    (with-db backend
       (doall
        (map #(orient->hirop % context-name)
             (condp = type
@@ -112,8 +111,8 @@
               :native (oquery/native-query class-name query)))))))
 
 (defn save-document
-  [sdoc]
-  (with-db
+  [backend sdoc]
+  (with-db backend
     (let [odoc
           (if (hirop/has-temporary-id? sdoc)
             (ograph/vertex)
@@ -123,20 +122,20 @@
       (hirop-id odoc))))
 
 (defn load-document
-  [hid]
-  (with-db
+  [backend hid]
+  (with-db backend
     (ocore/load (->rid hid))))
 
 (defn save-record-bytes!
-  [source]
-  (with-db
+  [backend source]
+  (with-db backend
     (let [rb (ocore/record-bytes source)]
       (ocore/save! rb)
       (str (.getIdentity rb)))))
 
 (defn load-record-bytes
-  [hid]
-  (with-db
+  [backend hid]
+  (with-db backend
     (let [rb (.load ocore/*db* (->rid hid))]
       (ocore/->bytes rb))))
 
@@ -145,8 +144,8 @@
   (ocore/oclass-name->kw (.field odoc "@class")))
 
 (defn traverse
-  [fields targets pred & [limit]]
-  (with-db
+  [backend fields targets pred & [limit]]
+  (with-db backend
     (let [targets
           (map
            (fn [target]
@@ -159,11 +158,11 @@
        (oquery/traverse fields targets pred limit)))))
 
 (defn backup
-  [location]
+  [connection-data location]
   (try
     (let [db (->
-              (com.orientechnologies.orient.core.db.graph.OGraphDatabase. (:connection-string *connection-data*))
-              (.open (:username *connection-data*) (:password *connection-data*)))
+              (com.orientechnologies.orient.core.db.graph.OGraphDatabase. (:connection-string connection-data))
+              (.open (:username connection-data) (:password connection-data)))
           listener (reify com.orientechnologies.orient.core.command.OCommandOutputListener
                      (onMessage [this text] nil))
           exporter (com.orientechnologies.orient.core.db.tool.ODatabaseExport. db location listener)]
@@ -175,8 +174,8 @@
       (throw e))))
 
 (defn save*
-  [sdocs context-name]
-  (with-db
+  [backend sdocs context-name]
+  (with-db backend
     (if-not (ocore/exists-class? :History)
       (ocore/create-class! :History))
     (try
@@ -247,7 +246,7 @@
 ;; TODO: do a better job in identifying the kind of exception and only return :conflict in that case
 
 (defn fetch*
-  [context-name external-ids boundaries]
+  [backend context-name external-ids boundaries]
   (let [targets (vals external-ids)
         boundaries (distinct (map #(str "'" (name %) "'") (filter #(not (contains? external-ids %)) boundaries)))
         context-name (name context-name)
@@ -255,7 +254,7 @@
         (if (empty? boundaries)
           (str "SELECT FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE (@class = 'OGraphVertex' OR context = '" context-name "')) WHERE @class = 'OGraphVertex'")
           (str "SELECT FROM (TRAVERSE V.out, E.in FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE ((@class = 'OGraphVertex' AND NOT (_hirop_type IN [" (string/join ", " boundaries) "])) OR context = '" context-name "')) WHERE ($depth < 3 AND (@class = 'OGraphVertex' OR context = '" context-name "'))) WHERE @class = 'OGraphVertex'"))]
-    (with-db
+    (with-db backend
       (doall
        (map #(orient->hirop % context-name)
             (oquery/sql-query q))))))
@@ -263,17 +262,17 @@
 
 (defmethod fetch :orientdb
   [backend context]
-  (fetch* (:name context) (:external-ids context) (hirop/get-free-external-doctypes context)))
+  (fetch* backend (:name context) (:external-ids context) (hirop/get-free-external-doctypes context)))
 
 (defmethod save :orientdb
   [backend context]
   (let [sdocs (vals (:starred context))
         context-name (:name context)]
-    (save* sdocs context-name)))
+    (save* backend sdocs context-name)))
 
 (defmethod history :orientdb
   [backend id]
-  (with-db
+  (with-db backend
     (doall
      (map hist->hirop
           (oquery/sql-query (str "SELECT FROM History WHERE _hirop_id = " id))))))
