@@ -253,11 +253,13 @@
         q
         (if (empty? boundaries)
           (str "SELECT FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE (@class = 'OGraphVertex' OR context = '" context-name "')) WHERE @class = 'OGraphVertex'")
-          (str "SELECT FROM (TRAVERSE V.out, E.in FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE ((@class = 'OGraphVertex' AND NOT (_hirop_type IN [" (string/join ", " boundaries) "])) OR context = '" context-name "')) WHERE ($depth < 3 AND (@class = 'OGraphVertex' OR context = '" context-name "'))) WHERE @class = 'OGraphVertex'"))]
-    (with-db backend
-      (doall
-       (map #(orient->hirop % context-name)
-            (oquery/sql-query q))))))
+          (str "SELECT FROM (TRAVERSE V.out, E.in FROM (TRAVERSE V.in,E.out,V.out,E.in FROM [" (string/join ", " targets) "] WHERE ((@class = 'OGraphVertex' AND NOT (_hirop_type IN [" (string/join ", " boundaries) "])) OR context = '" context-name "')) WHERE ($depth < 3 AND (@class = 'OGraphVertex' OR context = '" context-name "'))) WHERE @class = 'OGraphVertex'"))
+        documents (with-db backend
+                           (doall
+                             (map #(orient->hirop % context-name)
+                                  (oquery/sql-query q))))]
+      {:documents documents
+       :context-info nil}))
 
 
 (defmethod fetch :orientdb

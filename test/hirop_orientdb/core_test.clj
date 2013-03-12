@@ -38,7 +38,7 @@
     (init-fresh connection-data)
     (let [res (save* connection-data sdocs :test)
           remap (:remap res)
-          docs (fetch* connection-data :test {:Foo (remap "tmp0")} nil)]
+          {docs :documents} (fetch* connection-data :test {:Foo (remap "tmp0")} nil)]
       (is (= (set (hirop/hrel (first (filter #(= (hirop/htype %) :Baz) docs)) :Bar))
              (set [(remap "tmp1") (remap "tmp2")]))))))
 
@@ -61,13 +61,13 @@
     (init-fresh connection-data)
     (let [res (save* connection-data sdocs :test)
           remap (:remap res)
-          docs (fetch* connection-data :test {:Foo (remap "tmp0")} nil)]
+          {docs :documents} (fetch* connection-data :test {:Foo (remap "tmp0")} nil)]
       (is (= (hirop/hmeta (first (filter hirop/hmeta docs)))
              {:tag "META"}))
       (is (= (set (map :title docs))
              #{"First1" "Second1" "Third" "Second2" "First2"})))
     (let [res (save* connection-data sdocs :test)
           remap (:remap res)
-          docs (fetch* connection-data :test {:Foo (remap "tmp0")} [:Foo :Baz])]
+          {docs :documents} (fetch* connection-data :test {:Foo (remap "tmp0")} [:Foo :Baz])]
       (is (= (set (map :title docs))
              #{"First1" "Second1" "Third"})))))
