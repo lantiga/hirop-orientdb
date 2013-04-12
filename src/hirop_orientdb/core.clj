@@ -22,16 +22,20 @@
     (catch Exception e (prn e))))
 
 (defn hirop-id [odoc]
-  (str (:#rid odoc)))
+  #_(str (:#rid odoc))
+  (:_hirop_id odoc))
 
 (defn hirop-rev [odoc]
   (str (:#version odoc)))
 
-(defn ->rid [hid]
-  (com.orientechnologies.orient.core.id.ORecordId. hid))
+(defn ->rid [oid]
+  (com.orientechnologies.orient.core.id.ORecordId. oid))
 
 (defn orient-id [sdoc]
-  (->rid (hirop/hid sdoc)))
+  (->rid (get-in sdoc [:_hirop :orient-id])))
+
+(defn assoc-orient-id [sdoc oid]
+  (assoc-in sdoc [:_hirop :orient-id] oid))
 
 (defn orient-rev [sdoc]
   (read-string (hirop/hrev sdoc)))
@@ -65,13 +69,14 @@
   ([odoc context-name]
      (let [odoc-map (ocore/doc->map odoc)
            sdoc (dissoc odoc-map :#rid :#version :in :out)
-           sdoc (dissoc sdoc :_hirop_conf :_hirop_meta :_hirop_type)
+           sdoc (dissoc sdoc :_hirop_id :_hirop_conf :_hirop_meta :_hirop_type)
            rid (str (:#rid odoc))
            version (str (:#version odoc))
            rels (if (= (odoc :#class) :OGraphVertex) (flatten-rels odoc context-name) {})]
        (->
         sdoc 
-        (hirop/assoc-hid rid) 
+        (assoc-orient-id rid) 
+        (hirop/assoc-hid (:_hirop_id odoc))
         (hirop/assoc-hrev version) 
         (hirop/assoc-hrels rels)
         (hirop/assoc-hconf (:_hirop_conf odoc))
@@ -94,6 +99,7 @@
   (->
    sdoc
    (dissoc :_hirop)
+   (assoc :_hirop_id (hirop/hid sdoc))
    (assoc :_hirop_conf (hirop/hconf sdoc))
    (assoc :_hirop_meta (hirop/hmeta sdoc))
    (assoc :_hirop_type (name (hirop/htype sdoc)))))
@@ -114,7 +120,7 @@
   [backend sdoc]
   (with-db backend
     (let [odoc
-          (if (hirop/has-temporary-id? sdoc)
+          (if (orient-id sdoc)
             (ograph/vertex)
             (ocore/load (orient-id sdoc)))
           odoc (merge odoc (hirop->orient-map sdoc))]
@@ -122,9 +128,9 @@
       (hirop-id odoc))))
 
 (defn load-document
-  [backend hid]
+  [backend orient-id]
   (with-db backend
-    (ocore/load (->rid hid))))
+    (ocore/load (->rid orient-id))))
 
 (defn save-record-bytes!
   [backend source]
@@ -134,9 +140,9 @@
       (str (.getIdentity rb)))))
 
 (defn load-record-bytes
-  [backend hid]
+  [backend orient-id]
   (with-db backend
-    (let [rb (.load ocore/*db* (->rid hid))]
+    (let [rb (.load ocore/*db* (->rid orient-id))]
       (ocore/->bytes rb))))
 
 (defn class-name
@@ -185,7 +191,7 @@
                                    (map
                                     (fn [sdoc]
                                       (let [odoc
-                                            (if (hirop/has-temporary-id? sdoc)
+                                            (if (orient-id sdoc)
                                               (ograph/vertex)
                                               (ocore/load (orient-id sdoc)))]
                                         [(hirop/hid sdoc) odoc]))
@@ -201,7 +207,7 @@
                   (do
                     ;; ok, no conflict so far, so go ahead, copy old data to history, merge new data, clean old links for the context and create new links for the context
                     ;; TODO: make history optional
-                    (doseq [[id odoc] (filter #(not (hirop/is-temporary-id? (first %))) odoc-map)]
+                    (doseq [[id odoc] odoc-map]
                       (let [hist-odoc (ocore/document :History)
                             hist-odoc (merge hist-odoc (orient->hist odoc))]
                         (ocore/save! hist-odoc)))
@@ -227,19 +233,14 @@
                             (doseq [to-hid to-hids]
                               (let[to-odoc (get odoc-map to-hid)
                                    ;; in case it is an external id, we have to load it
+                                   ;; FIXME: we have to load it by oid, not hid
                                    to-odoc (or to-odoc (ocore/load (->rid to-hid)))]
                                 (ograph/link! from-odoc rel-data to-odoc))))))
                       ;; save all
                       (doseq [[_ odoc] odoc-map] (ocore/save! odoc))
                       odoc-map))
-                  (throw (Exception. "Conflict detected")))))
-            tmp-map
-            (into {}
-                  (doall
-                   (map
-                    (fn [el] [(first el) (hirop-id (second el))])
-                    (filter #(hirop/is-temporary-id? (first %)) odoc-map))))]
-        {:result :success :remap tmp-map})
+                  (throw (Exception. "Conflict detected")))))]
+        {:result :success})
       (catch Exception e
         (prn e)
         {:result :conflict}))))
@@ -247,7 +248,8 @@
 
 (defn fetch*
   [backend context-name external-ids boundaries]
-  (let [targets (vals external-ids)
+  (let [;; FIXME: targets is not correct: we need an INDEX from hids to oids in order to be able to traverse from hids 
+        targets (vals external-ids)
         boundaries (distinct (map #(str "'" (name %) "'") (filter #(not (contains? external-ids %)) boundaries)))
         context-name (name context-name)
         q
